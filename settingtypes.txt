@@ -1,0 +1,2 @@
+# amount of time before a barter request will time out, in seconds
+barter_request.timeout (barter request timeout) int 30 0 86400
