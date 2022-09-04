@@ -1,6 +1,8 @@
 local modname = minetest.get_current_modname()
 local modpath = minetest.get_modpath(modname)
 
+local S = minetest.get_translator(modname)
+
 local function log(level, messagefmt, ...)
     minetest.log(level, ("%s %s"):format(modname, messagefmt:format(...)))
 end
@@ -10,6 +12,7 @@ local settings = {
 }
 
 local current_requests = {}
+local active_trades = {}
 
 barter_request = {
     modname = modname,
@@ -18,6 +21,8 @@ barter_request = {
     log=log,
     settings = settings,
     current_requests = current_requests,
+    active_trades = active_trades,
+    S = S,
 }
 
 local formspec = {
@@ -43,69 +48,6 @@ local formspec = {
     },
 }
 
-local function check_privilege(listname,playername,meta)
-        if listname == "pl1" then
-                if playername ~= meta:get_string("pl1") then
-                        return false
-                elseif meta:get_int("pl1step") ~= 1 then
-                        return false
-                end
-        end
-        if listname == "pl2" then
-                if playername ~= meta:get_string("pl2") then
-                        return false
-                elseif meta:get_int("pl2step") ~= 1 then
-                        return false
-                end
-        end
-        return true
-end
-
-local function update_formspec(meta)
-    formspec = formspec.main
-    local function pl_formspec(n)
-        if meta:get_int(n.."step")==0 then
-            formspec = formspec .. formspec[n].start
-        else
-            formspec = formspec .. formspec[n].player(meta:get_string(n))
-            if meta:get_int(n.."step") == 1 then
-                    formspec = formspec .. formspec[n].accept1
-            elseif meta:get_int(n.."step") == 2 then
-                    formspec = formspec .. formspec[n].accept2
-            end
-        end
-    end
-    pl_formspec("pl1")
-    pl_formspec("pl2")
-    meta:set_string("formspec",formspec)
-end
-
-local function give_inventory(inv,list,playername)
-    local player = minetest.get_player_by_name(playername)
-    if player then
-        for k,v in ipairs(inv:get_list(list)) do
-            if player:get_inventory():room_for_item("main",v) then
-                player:get_inventory():add_item("main",v)
-            else
-                minetest.add_item(player:get_pos(),v)
-            end
-            inv:remove_item(list,v)
-        end
-    end
-end
-
-local function cancel(meta)
-    give_inventory(meta:get_inventory(),"pl1",meta:get_string("pl1"))
-    give_inventory(meta:get_inventory(),"pl2",meta:get_string("pl2"))
-    meta:set_string("pl1","")
-    meta:set_string("pl2","")
-    meta:set_int("pl1step",0)
-    meta:set_int("pl2step",0)
-    meta:set_int("clean",1)
-    meta:set_int("timer",0)
-end
-
-
 local function timeout_check(requester, requestee, deadline)
     local args = current_requests[requestee] or {}
     local requester2, deadline2 = unpack(args)
@@ -114,44 +56,53 @@ local function timeout_check(requester, requestee, deadline)
     end
 end
 
+local function initiate(requester, requestee)
+    if current_requests[requestee] then
+        minetest.chat_send_player(requester, S(("%s is already trading!"):format(requestee)))
+        return
+    end
+
+    local other_player = minetest.get_player_by_name(requestee)
+    if other_player then
+        local deadline = os.time() + settings.timeout
+        current_requests[requestee] = { requester, deadline }
+        minetest.chat_send_player(requestee, S((
+            "%s has request to trade with you. " ..
+            "type '/barter accept' to accept, " ..
+            "or '/barter refuse' to refuse."):format(requester))
+        )
+        minetest.after(settings.timeout, timeout_check, requester, requestee, deadline)
+
+    else
+        minetest.chat_send_player(requester, S(("%s is not online right now."):format(requestee)))
+    end
+end
+
+local function refuse(invoker)
+    if current_requests[invoker] then
+        local requester, _ = unpack(current_requests[invoker])
+        minetest.chat_send_player(requester, S(("%s refuses to trade with you right now"):format(invoker)))
+        minetest.chat_send_player(invoker, S(("refused trade with %s"):format(requester)))
+    end
+    current_requests[invoker] = nil
+end
+
 minetest.register_chatcommand("barter", {
     params = "with <playername> | accept | refuse",
-    description = "barter with other players",
+    description = S("barter with other players"),
     func = function(invoker, params)
         local other_name
         _, _, other_name = string.find("with (%w+)")
         if other_name then
-            if current_requests[other_name] then
-                minetest.chat_send_player(invoker, ("%s is already trading!"):format(other_name))
-                return
-            end
-
-            local other_player = minetest.get_player_by_name(other_name)
-            if other_player then
-                local deadline = os.time() + settings.timeout
-                current_requests[other_name] = { invoker, deadline }
-                minetest.chat_send_player(other_name, (
-                    "%s has request to trade with you. " ..
-                    "type '/barter accept' to accept, " ..
-                    "or '/barter refuse' to refuse."):format(invoker)
-                )
-                minetest.after(settings.timeout, timeout_check, invoker, other_name, deadline)
-
-            else
-                minetest.chat_send_player(invoker, ("%s is not online right now."):format(other_name))
-            end
+            initiate(invoker, other_name)
 
         elseif params == "accept" then
             local requester, _ = unpack(current_requests[invoker])
             error("TODO")
 
         elseif params == "refuse" then
-            if current_requests[invoker] then
-                local requester, _ = unpack(current_requests[invoker])
-                minetest.chat_send_player(requester, ("%s refuses to trade with you right now"):format(invoker))
-                minetest.chat_send_player(invoker, ("refused trade with %s"):format(requester))
-            end
-            current_requests[invoker] = nil
+            refuse(invoker)
+
         end
     end
 })
